@@ -349,8 +349,8 @@ const wchar_t * layout_en = L"`1234567890-=~!@#$%^&*()_+qwertyuiop[]QWERTYUIOP{}
 char * layout_converter(char * s){ // производящая
     return common_converter(s, layout_ru, layout_en);
 }
-const wchar_t * layout_lo = L"`1234567890-=qwertyuiop[]asdfghjkl;'\\zxcvbnm,./ё1234567890-=йцукенгшщзхъфывапролджэ\\ячсмитьбю.";
-const wchar_t * layout_up = L"~!@#$%^&*()_+QWERTYUIOP{}ASDFGHJKL:\"|ZXCVBNM<>?Ё!\"№;%:?*()_+ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭ/ЯЧСМИТЬБЮ,";
+const wchar_t * layout_lo = L"qwertyuiopasdfghjklzxcvbnmёйцукенгшщзхъфывапролджэячсмитьбю";
+const wchar_t * layout_up = L"QWERTYUIOPASDFGHJKLZXCVBNMЁЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ";
 char * shift_converter(char * s){ // производящая
     return common_converter(s, layout_lo, layout_up);
 }
