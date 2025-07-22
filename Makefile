@@ -1,0 +1,47 @@
+CC = gcc # clang
+DESTDIR = /usr/local/bin
+SYSTEMD_USER_DIR = $(HOME)/.config/systemd/user
+UNIT_FILE = $(SYSTEMD_USER_DIR)/linux-punto-switcher.service
+#CFLAGS = -Wall -Wextra -Wconversion -Woverflow 
+
+.PHONY: all install enable clean uninstall
+
+all: linux-punto-switcher keyview
+
+linux-punto-switcher: keydeamon.c
+	$(CC) keydeamon.c -o linux-punto-switcher $(CFLAGS) $(LDFLAGS) $(shell pkg-config --cflags --libs dbus-1)
+
+keyview: keyview.c
+	$(CC) keyview.c -o keyview $(CFLAGS) $(LDFLAGS) -lncurses 
+
+
+install: linux-punto-switcher
+	install -m 4755 -o root -g root linux-punto-switcher $(DESTDIR)/linux-punto-switcher
+
+user-setup:
+	install -d $(SYSTEMD_USER_DIR)
+	echo "[Unit]"                                     >  $(UNIT_FILE)
+	echo "Description=linux-punto-switcher"           >> $(UNIT_FILE)
+	echo ""                                           >> $(UNIT_FILE)
+	echo "[Service]"                                  >> $(UNIT_FILE)
+	echo "ExecStart=$(DESTDIR)/linux-punto-switcher"  >> $(UNIT_FILE)
+	echo "Restart=on-failure"                         >> $(UNIT_FILE)
+	echo ""                                           >> $(UNIT_FILE)
+	echo "[Install]"                                  >> $(UNIT_FILE)
+	echo "WantedBy=default.target"                    >> $(UNIT_FILE)
+	systemctl --user daemon-reexec
+	systemctl --user daemon-reload
+	systemctl --user enable --now $(UNIT_FILE)
+
+clean:
+	rm -f linux-punto-switcher keyview
+
+uninstall:
+	@echo "Use 'sudo make uninstall-system' and 'make uninstall-user' separately."
+
+uninstall-system:
+	rm -f $(DESTDIR)/linux-punto-switcher
+
+uninstall-user:
+	systemctl --user disable --now linux-punto-switcher.service || true
+	rm -f $(UNIT_FILE)
