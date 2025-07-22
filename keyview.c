@@ -1,4 +1,4 @@
-// gcc keymon.c -o keymon -lncurses 
+// gcc keyview.c -o keyview -lncurses 
 //-I/usr/include/libevdev-1.0  -levdev
 #define _GNU_SOURCE
 #include <fcntl.h>
@@ -27,8 +27,6 @@ int key_count = 0;
 int pressed[MAX_KEYS] = {0};
 int used[MAX_KEYS] = {0};
 
-int ctrl_num = 0;
-
 void add_key(const char *label, int code, int row, int col) {
     if(label==NULL) return;
     for(int i=0; i<key_count; i++)
@@ -38,11 +36,10 @@ void add_key(const char *label, int code, int row, int col) {
             printf("%s %d (%d, %d)\n",label,code,row,col);
             exit(1);
         }
-    keys[key_count++] = (Key){label, code, row, col};
+    keys[key_count] = (Key){label, code, row, col};
     used[code] = 1;
 
-    if(code==KEY_LEFTCTRL)
-        ctrl_num = key_count-1;
+    key_count++;
 }
 
 #define arrlen(arr) (sizeof(arr)/sizeof(arr[0]))
@@ -62,27 +59,27 @@ void init_keys() {
     const char *row1[] = {"`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Back"};
     int codes1[] = {KEY_GRAVE, KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6,
                     KEY_7, KEY_8, KEY_9, KEY_0, KEY_MINUS, KEY_EQUAL, KEY_BACKSPACE};
-    for (int i = 0; i < arrlen(row1); i++) add_key(row1[i], codes1[i], 1, i);
+    for (size_t i = 0; i < arrlen(row1); i++) add_key(row1[i], codes1[i], 1, (int)i);
 
     // QWERTY
     const char *row2[] = {"Tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "Enter"};
     int codes2[] = {KEY_TAB, KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y, KEY_U,
                     KEY_I, KEY_O, KEY_P, KEY_LEFTBRACE, KEY_RIGHTBRACE, KEY_ENTER};
-    for (int i = 0; i < 14; i++) add_key(row2[i], codes2[i], 2, i);
+    for (size_t i = 0; i < arrlen(row2); i++) add_key(row2[i], codes2[i], 2, (int)i);
 
     const char *row3[] = {"Caps", "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "\\", "Enter"};
     int codes3[] = {KEY_CAPSLOCK, KEY_A, KEY_S, KEY_D, KEY_F, KEY_G, KEY_H, KEY_J, KEY_K,
                     KEY_L, KEY_SEMICOLON, KEY_APOSTROPHE, KEY_BACKSLASH, KEY_ENTER};
-    for (int i = 0; i < arrlen(row3); i++) add_key(row3[i], codes3[i], 3, i);
+    for (size_t i = 0; i < arrlen(row3); i++) add_key(row3[i], codes3[i], 3, (int)i);
 
     const char *row4[] = {"Shift","Shift", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "Shift","Shift"};
     int codes4[] = {KEY_LEFTSHIFT, KEY_LEFTSHIFT, KEY_Z, KEY_X, KEY_C, KEY_V, KEY_B, KEY_N, KEY_M,
                     KEY_COMMA, KEY_DOT, KEY_SLASH, KEY_RIGHTSHIFT, KEY_RIGHTSHIFT};
-    for (int i = 0; i < arrlen(row4); i++) add_key(row4[i], codes4[i], 4, i);
+    for (size_t i = 0; i < arrlen(row4); i++) add_key(row4[i], codes4[i], 4, (int)i);
 
     const char *row5[] = {"Ctrl", "Win", "Alt", "SPACE", "SPACE", "SPACE", "SPACE", "SPACE", "SPACE", "SPACE", "Alt", "Win", "Menu", "Ctrl"};
     int codes5[] = {KEY_LEFTCTRL, KEY_LEFTMETA, KEY_LEFTALT, KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_RIGHTALT, KEY_RIGHTMETA, KEY_COMPOSE, KEY_RIGHTCTRL};
-    for (int i = 0; i < arrlen(row5); i++) add_key(row5[i], codes5[i], 5, i);
+    for (size_t i = 0; i < arrlen(row5); i++) add_key(row5[i], codes5[i], 5, (int)i);
 
     // arrows & control_keys
     const char *controls[] = {"PrScr", "ScoLk", "Pause", 
@@ -97,7 +94,7 @@ void init_keys() {
                             0, 0, 0,
                             0, KEY_UP, 0,
                             KEY_LEFT, KEY_DOWN, KEY_RIGHT};
-    for (int i = 0; i < arrlen(control_codes); i++) add_key(controls[i], control_codes[i], i/3, 14+(i%3));
+    for (size_t i = 0; i < arrlen(control_codes); i++) add_key(controls[i], control_codes[i], (int)i/3, 14+(int)(i%3));
 
 
     // NumPad
@@ -112,7 +109,7 @@ void init_keys() {
                       KEY_KP1, KEY_KP2, KEY_KP3, KEY_KPENTER,
                       KEY_KP0, KEY_KP0, KEY_KPDOT, KEY_KPENTER};
 
-    for (int i = 0; i < arrlen(numpad); i++) add_key(numpad[i], numcodes[i], 1 + i / 4, 17 + (i % 4));
+    for (size_t i = 0; i < arrlen(numpad); i++) add_key(numpad[i], numcodes[i], 1 + (int)i / 4, 17 + (int)(i % 4));
 
     // регистрируем неисползованные коды
     int row=8;
@@ -142,10 +139,10 @@ void draw_keys(WINDOW *win) {//, const char * name) {
         int r = keys[i].row + 1;
         int c = keys[i].col * 7 + 2;
         if (pressed[keys[i].code]) wattron(win, A_REVERSE | A_BOLD);
-        if(pressed[ctrl_num])
-            mvwprintw(win, r, c, "[%-5s]", keys[i].label);
-        else
+        if(pressed[KEY_LEFTCTRL])
             mvwprintw(win, r, c, "[%-5d]", keys[i].code);
+        else
+            mvwprintw(win, r, c, "[%-5s]", keys[i].label);
         if (pressed[keys[i].code]) wattroff(win, A_REVERSE | A_BOLD);
     }
 
@@ -154,7 +151,7 @@ void draw_keys(WINDOW *win) {//, const char * name) {
     wrefresh(win);
 }
 
-int main(int argc, char **argv) {
+int main() {
     //printf("%d, %ld, %ld, %ld, %d\n", BUS_USB, UI_SET_EVBIT, UI_SET_KEYBIT, UI_DEV_SETUP, UI_DEV_CREATE);
 
     init_keys();
@@ -187,7 +184,7 @@ int main(int argc, char **argv) {
         //int rc = libevdev_next_event(dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
 
         if (/*rc==0 &&*/ ev.type == EV_KEY && ev.code < MAX_KEYS) {
-            pressed[ev.code] = (ev.value != 0);  // 1=down, 0=up
+            pressed[ev.code] = ev.value;  // 1=down, 0=up
             draw_keys(win);//,libevdev_get_name(dev));
         }
     }
