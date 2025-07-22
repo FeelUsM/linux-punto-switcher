@@ -389,8 +389,20 @@ void convert(char * (*converter)(char *)){
     usleep(dd);
     send_keycomb2(KEY_LEFTCTRL, KEY_X); // через uinput
   //printf("ctrl+x\n");
-    usleep(300000);
-    char * selected = get_clipboard(); // через dbus
+    char * selected =0;
+    for(int i=0; i<35; i++){
+        usleep(10000); // каждые 10 мс
+        selected = get_clipboard(); // через dbus
+        if(strcmp(selected,backgr)!=0) // проверяем, не поменялся ли clipboard
+            break;
+        else{
+            free(selected);
+            selected = 0;
+        }
+    }
+    if(selected==0)
+        selected = get_clipboard(); // через dbus
+
   //printf("selected:");prepr(selected);printf(" -> ");
     char * converted = converter(selected);
     if(converted==NULL){
@@ -414,7 +426,8 @@ void convert(char * (*converter)(char *)){
     free(converted);
     // todo сделать выделение вконце----
   //printf("----\n");
-    change_layout();
+    if(converter==layout_converter)
+        change_layout();
 }
 
 int main() {
@@ -513,6 +526,11 @@ int main() {
                     if(buf_len>=MAX_BUF)
                         buf_len=0;
                     buffer[buf_len++] = code;
+                }
+            }
+            else if(code == KEY_BACKSPACE && state==0) {
+                if(value==1 && buf_len>0){
+                    buf_len -=1;
                 }
             }
             else if(code == KEY_PAUSE && state==0) {
