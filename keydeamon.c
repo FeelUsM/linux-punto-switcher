@@ -13,10 +13,100 @@
 
 #include <fcntl.h>
 #include <unistd.h>
+#include <dirent.h>
 
 #include <linux/uinput.h>
 #include <linux/input.h>
 #include <dbus/dbus.h>
+
+int device_has_keyboard_keys(const char *devpath, char * name) {
+    int fd = open(devpath, O_RDONLY);
+    if (fd < 0){
+        perror(devpath);
+        return 0;  
+    } 
+
+    unsigned long ev_bits[(EV_MAX + 7)/8] = {0};
+    unsigned long key_bits[(KEY_MAX + 7)/8] = {0};
+
+    if (ioctl(fd, EVIOCGBIT(0, sizeof(ev_bits)), ev_bits) < 0) {
+        perror("ioctl EVIOCGBIT");
+        close(fd);
+        return 0;
+    }
+
+    #define BITS_PER_LONG (sizeof(unsigned long) * 8)
+    if (!(ev_bits[EV_KEY / BITS_PER_LONG] & (1UL << (EV_KEY % BITS_PER_LONG)))) {
+        close(fd);
+        return 0; // не поддерживает EV_KEY
+    }
+
+    if(ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits)<0){
+        perror("ioctl EVIOCGBIT");
+        close(fd);
+        return 0;
+    }
+
+    /*
+     printf("%s:",devpath);
+    // каждый бит соответствует поддерживаемой клавише устройства
+    for(int i=0; i<4; i++){
+        printf("%lx ", key_bits[i]);
+    }
+    printf("\n");
+    */
+    
+    int low_cnt = 0, high_cnt = 0;
+    for(unsigned long i=1; i!=0; i<<=1){
+        if(key_bits[0]&i) low_cnt+=1;
+    }
+    for(unsigned long i=1; i!=0; i<<=1){
+        if(key_bits[1]&i) low_cnt+=1;
+    }
+
+    for(unsigned long i=1; i!=0; i<<=1){
+        if(key_bits[2]&i) high_cnt+=1;
+    }
+    for(unsigned long i=1; i!=0; i<<=1){
+        if(key_bits[3]&i) high_cnt+=1;
+    }
+    // printf("%d %d\n",low_cnt, high_cnt);
+    ioctl(fd, EVIOCGNAME(PATH_MAX), name);
+    // printf("Устройство: %s (%s)\n", devpath, name);
+
+    close(fd);
+    // на физической клавиатуре поддерживается достаточное количество реальных клавиш (чей key_code < 128)
+    // и маленькое количество виртуальных клавиш (чей key_code > 128)
+    // на виртуальных клавиатурах (/dev/uinput) зачастую поддерживаются почти все виртуальные клавиши
+    return low_cnt>60 && high_cnt<60;
+}
+
+int find_keyboard(char * path, char * name){ // возвращает количество найденных клавиатур
+    DIR *dir = opendir("/dev/input");
+    struct dirent *ent;
+    int found = 0;
+
+    while ((ent = readdir(dir))) {
+        if (strncmp(ent->d_name, "event", 5) != 0) continue;
+        char lpath[PATH_MAX];
+        char lname[PATH_MAX];
+        snprintf(lpath, sizeof(lpath), "/dev/input/%s", ent->d_name);
+
+        if (device_has_keyboard_keys(lpath, lname)) {
+            if(found>0) {
+                printf("найдено больше одной клавиатуры\n");
+                printf("клавиатура %s (%s) игнорируется\n",path, name);
+            }
+            strcpy(path,lpath);
+            strcpy(name,lname);
+            found++;
+        }
+    }
+    closedir(dir);
+    if(found>1)
+        printf("выбрана клавиатура %s (%s)\n",path, name);
+    return found;
+}
 
 int ev_fd = -1, uinput_fd = -1; // input_fd, output_fd
 
@@ -47,7 +137,7 @@ void setup_uinput() {
         // идентификаторы виртуального устройства
         .id = { BUS_USB, // тип "шины", по сути просто для отображения (виртуально говорим, что это USB-клавиатура)
             1, 1, 1 }, // vendor, product, version
-        .name = "keydaemon-uinput" // имя устройства, отображается, например, в evtest и xinput
+        .name = "linux-punto-switcher-virtual-input" // имя устройства, отображается, например, в evtest и xinput
     };
 
     // Передаёт ядру Linux описание устройства
@@ -433,7 +523,14 @@ void convert(char * (*converter)(char *)){
 int main() {
     setup_uinput();
     // Открываем /dev/input/eventX
-    ev_fd = open("/dev/input/event2", O_RDONLY/*|O_NONBLOCK*/);
+    char dev_path[PATH_MAX];
+    char dev_name[PATH_MAX] = "Unknown";
+    if(find_keyboard(dev_path, dev_name)==0){
+        printf("physical keyboards not found\n");
+        exit(1);
+    }
+
+    ev_fd = open(dev_path, O_RDONLY/*|O_NONBLOCK*/);
     if (ev_fd < 0) {
         perror("open event device");
         return 1;

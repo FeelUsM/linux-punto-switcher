@@ -1,8 +1,8 @@
-CC = gcc # clang
+#CC = clang
+#CFLAGS = -Wall -Wextra -Wconversion -Woverflow -O2
 DESTDIR = /usr/local/bin
 SYSTEMD_USER_DIR = $(HOME)/.config/systemd/user
 UNIT_FILE = $(SYSTEMD_USER_DIR)/linux-punto-switcher.service
-#CFLAGS = -Wall -Wextra -Wconversion -Woverflow 
 
 .PHONY: all install enable clean uninstall
 
@@ -37,7 +37,7 @@ clean:
 	rm -f linux-punto-switcher keyview
 
 uninstall:
-	@echo "Use 'sudo make uninstall-system' and 'make uninstall-user' separately."
+	@echo "Use 'make uninstall-user' and 'sudo make uninstall-system' separately."
 
 uninstall-system:
 	rm -f $(DESTDIR)/linux-punto-switcher
