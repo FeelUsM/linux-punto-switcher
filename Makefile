@@ -4,7 +4,7 @@ DESTDIR = /usr/local/bin
 SYSTEMD_USER_DIR = $(HOME)/.config/systemd/user
 UNIT_FILE = $(SYSTEMD_USER_DIR)/linux-punto-switcher.service
 
-.PHONY: all install enable clean uninstall
+.PHONY: all install user-setup clean uninstall uninstall-system uninstall-user
 
 all: linux-punto-switcher keyview
 
