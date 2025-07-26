@@ -14,12 +14,17 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <sys/stat.h>
+#include <poll.h>
 
 #include <linux/uinput.h>
 #include <linux/input.h>
 #include <dbus/dbus.h>
 
-int device_has_keyboard_keys(const char *devpath, char * name) {
+#define DEBUG 0
+
+// =========== настройка input =================
+int device_has_keyboard_keys(const char *devpath/*input*/, char * name/*output*/) {
     int fd = open(devpath, O_RDONLY);
     if (fd < 0){
         perror(devpath);
@@ -37,6 +42,7 @@ int device_has_keyboard_keys(const char *devpath, char * name) {
 
     #define BITS_PER_LONG (sizeof(unsigned long) * 8)
     if (!(ev_bits[EV_KEY / BITS_PER_LONG] & (1UL << (EV_KEY % BITS_PER_LONG)))) {
+        if(DEBUG)printf("not keyboard %s %lx %lx\n",devpath,ev_bits[EV_KEY / BITS_PER_LONG],(1UL << (EV_KEY % BITS_PER_LONG)));
         close(fd);
         return 0; // не поддерживает EV_KEY
     }
@@ -70,9 +76,8 @@ int device_has_keyboard_keys(const char *devpath, char * name) {
     for(unsigned long i=1; i!=0; i<<=1){
         if(key_bits[3]&i) high_cnt+=1;
     }
-    // printf("%d %d\n",low_cnt, high_cnt);
     ioctl(fd, EVIOCGNAME(PATH_MAX), name);
-    // printf("Устройство: %s (%s)\n", devpath, name);
+    if(DEBUG)printf("Устройство: %s (%s) %d %d\n", devpath, name, low_cnt, high_cnt);
 
     close(fd);
     // на физической клавиатуре поддерживается достаточное количество реальных клавиш (чей key_code < 128)
@@ -81,37 +86,92 @@ int device_has_keyboard_keys(const char *devpath, char * name) {
     return low_cnt>60 && high_cnt<60;
 }
 
-int find_keyboard(char * path, char * name){ // возвращает количество найденных клавиатур
+typedef struct _keyboard {
+    int fd;
+    char filename[PATH_MAX];
+    char name[PATH_MAX];
+    struct _keyboard * next;
+} Keyboard;
+Keyboard * kbd_list = NULL;
+
+void print_kbd_list(){
+    for(Keyboard * pk = kbd_list; pk; pk=pk->next)
+        printf("%d %s (%s)\n",pk->fd, pk->filename, pk->name);
+}
+
+void update_keyboards(){
+    // проходим по списку, удаляем отключённые клавиатуры
+    Keyboard * pk = kbd_list, ** pkprev = &kbd_list;
+    while(pk){
+        struct stat st;
+        if(stat(pk->filename,&st)==-1){
+            printf("unplug Keyboard %s (%s)\n",pk->filename, pk->name);
+            close(pk->fd);
+            Keyboard * tmp = pk;
+            (*pkprev) = pk->next;
+            pk = pk->next;
+            free(tmp);
+            continue;
+        }
+        pkprev = &(pk->next);
+        pk = pk->next;
+    }
+    //printf("after deletion remaining %p\n",kbd_list);
+
+    // ищем новые клавиатуры
     DIR *dir = opendir("/dev/input");
     struct dirent *ent;
-    int found = 0;
 
     while ((ent = readdir(dir))) {
         if (strncmp(ent->d_name, "event", 5) != 0) continue;
+
         char lpath[PATH_MAX];
         char lname[PATH_MAX];
         snprintf(lpath, sizeof(lpath), "/dev/input/%s", ent->d_name);
+        int already = 0;
+        for(pk=kbd_list; pk; pk=pk->next){
+            if(strcmp(pk->filename, lpath)==0) {
+                already = 1;
+                if(DEBUG)printf("already %s\n",lpath);
+                if(DEBUG)print_kbd_list();
+                if(DEBUG)printf("----\n");
+                break;
+            }
+        }
+        if(already)
+            continue;
 
         if (device_has_keyboard_keys(lpath, lname)) {
-            if(found>0) {
-                printf("найдено больше одной клавиатуры\n");
-                printf("клавиатура %s (%s) игнорируется\n",path, name);
+            int fd = open(lpath, O_RDONLY|O_NONBLOCK);
+            if (fd < 0) {
+                perror(lpath);
+                //fprintf(stderr,"can't open %s (%s)\n",lpath,lname);
             }
-            strcpy(path,lpath);
-            strcpy(name,lname);
-            found++;
+            else {
+                pk = malloc(sizeof(Keyboard));
+                pk->next = kbd_list;
+                kbd_list = pk;
+                pk->fd = fd;
+                strcpy(pk->filename,lpath);
+                strcpy(pk->name,lname);
+                printf("plug Keyboard %s (%s) %d\n",pk->filename, pk->name, pk->fd);
+            }
         }
     }
     closedir(dir);
-    if(found>1)
-        printf("выбрана клавиатура %s (%s)\n",path, name);
-    return found;
 }
 
-int ev_fd = -1, uinput_fd = -1; // input_fd, output_fd
+// =========== настройка uinput (output) =================
+
+int uinput_fd = -1; // output_fd
 
 void cleanup() {
-    if (ev_fd >= 0) close(ev_fd);
+    while(kbd_list){
+        close(kbd_list->fd);
+        Keyboard * tmp = kbd_list;
+        kbd_list = kbd_list->next;
+        free(tmp);
+    }
     if (uinput_fd >= 0) {
         ioctl(uinput_fd, UI_DEV_DESTROY);
         close(uinput_fd);
@@ -152,6 +212,8 @@ void setup_uinput() {
     // потом можно будет посмотреть это устройство в evtest или cat /proc/bus/input/devices
     atexit(cleanup);
 }
+
+// =========== настройка DBUS =================
 
 DBusError dbus_err;
 DBusConnection* dbus_conn;
@@ -523,24 +585,27 @@ void convert(char * (*converter)(char *)){
 int main() {
     setup_uinput();
     // Открываем /dev/input/eventX
-    char dev_path[PATH_MAX];
-    char dev_name[PATH_MAX] = "Unknown";
-    if(find_keyboard(dev_path, dev_name)==0){
+    update_keyboards();
+    if(kbd_list==0){
         printf("physical keyboards not found\n");
         exit(1);
     }
-
-    ev_fd = open(dev_path, O_RDONLY/*|O_NONBLOCK*/);
-    if (ev_fd < 0) {
-        perror("open event device");
-        return 1;
+    #define DEVICES_MAX 60
+    struct pollfd pfds[DEVICES_MAX];
+    Keyboard * pk = kbd_list;
+    int num_devices = 0;
+    for(; num_devices<DEVICES_MAX && pk; num_devices++, pk=pk->next){
+        pfds[num_devices].fd = pk->fd;
+        pfds[num_devices].events = POLLIN;
     }
+
     char path_buf[200];
     if(0>snprintf(path_buf,200,"unix:path=/run/user/%u/bus",getuid())){
         fprintf(stderr,"very strange error\n");
         exit(1);
     };
     setup_dbus(path_buf);
+
     setlocale(LC_CTYPE, "");
     check_convert_strings();
 
@@ -548,10 +613,28 @@ int main() {
     char * (*converter)(char*) =NULL;
 
     while (1) {
-        ssize_t n = read(ev_fd, &ev, sizeof(ev));
-        if (n != sizeof(ev)) continue;
+        int ret = poll(pfds, (nfds_t)num_devices, -1); // блокировка до события
+        if (ret < 0) {
+            perror("poll");
+            break;
+        }
 
-        if (/*rc == 0 && */ev.type == EV_KEY) { // key press
+        for (int i = 0; i < num_devices; ++i) {
+            if (pfds[i].revents & POLLIN) {
+                ssize_t n = read(pfds[i].fd, &ev, sizeof(ev));
+
+                if (n < (ssize_t)sizeof(ev)) {
+                    printf("insufficient %zd\n",n);
+                    continue;
+                } else if (n < 0) {
+                    perror("read");
+                } else {
+                    break;
+                }
+            }
+        }
+
+        if (ev.type == EV_KEY) { // key press
             int code = ev.code;
             int value = ev.value;
             //printf("%d %d %x %p\n",value, code, state, converter);

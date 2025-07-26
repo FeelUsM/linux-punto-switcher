@@ -6,7 +6,7 @@ UNIT_FILE = $(SYSTEMD_USER_DIR)/linux-punto-switcher.service
 
 .PHONY: all install user-setup clean uninstall uninstall-system uninstall-user
 
-all: linux-punto-switcher keyview
+all: linux-punto-switcher # keyview
 
 linux-punto-switcher: keydeamon.c
 	$(CC) keydeamon.c -o linux-punto-switcher $(CFLAGS) $(LDFLAGS) $(shell pkg-config --cflags --libs dbus-1)
