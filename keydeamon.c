@@ -1,5 +1,6 @@
 // sudo apt install libdbus-1-dev
-// clang keydeamon.c -o keydeamon $(pkg-config --cflags --libs dbus-1) -Wall -Wextra -Wconversion -Woverflow
+// sudo apt install libudev-dev
+// clang keydeamon.c -o keydeamon $(pkg-config --cflags --libs dbus-1) -ludev -Wall -Wextra -Wconversion -Woverflow
 // sudo chown root keydeamon
 // sudo chmod u+s keydeamon
 #define _GNU_SOURCE
@@ -19,9 +20,12 @@
 
 #include <linux/uinput.h>
 #include <linux/input.h>
+#include <libudev.h>
 #include <dbus/dbus.h>
 
+#ifndef DEBUG
 #define DEBUG 0
+#endif
 
 // =========== настройка input =================
 int device_has_keyboard_keys(const char *devpath/*input*/, char * name/*output*/) {
@@ -42,7 +46,7 @@ int device_has_keyboard_keys(const char *devpath/*input*/, char * name/*output*/
 
     #define BITS_PER_LONG (sizeof(unsigned long) * 8)
     if (!(ev_bits[EV_KEY / BITS_PER_LONG] & (1UL << (EV_KEY % BITS_PER_LONG)))) {
-        if(DEBUG)printf("not keyboard %s %lx %lx\n",devpath,ev_bits[EV_KEY / BITS_PER_LONG],(1UL << (EV_KEY % BITS_PER_LONG)));
+        //if(DEBUG)printf("not keyboard %s %lx %lx\n",devpath,ev_bits[EV_KEY / BITS_PER_LONG],(1UL << (EV_KEY % BITS_PER_LONG)));
         close(fd);
         return 0; // не поддерживает EV_KEY
     }
@@ -99,7 +103,20 @@ void print_kbd_list(){
         printf("%d %s (%s)\n",pk->fd, pk->filename, pk->name);
 }
 
-void update_keyboards(){
+void update_keyboards(/*struct udev_device *dev*/){
+    /*
+    if (dev) {
+        const char *action = udev_device_get_action(dev);
+        const char *devnode = udev_device_get_devnode(dev);
+        const char *name = udev_device_get_sysname(dev);
+
+        printf("Событие: %s — %s (%s)\n",
+               action ? action : "нет действия",
+               name ? name : "неизвестно",
+               devnode ? devnode : "нет devnode");
+    }
+    */
+
     // проходим по списку, удаляем отключённые клавиатуры
     Keyboard * pk = kbd_list, ** pkprev = &kbd_list;
     while(pk){
@@ -582,22 +599,53 @@ void convert(char * (*converter)(char *)){
         change_layout();
 }
 
-int main() {
-    setup_uinput();
-    // Открываем /dev/input/eventX
-    update_keyboards();
-    if(kbd_list==0){
-        printf("physical keyboards not found\n");
-        exit(1);
+// --------------- main ---------------
+#define DEVICES_MAX 60
+struct pollfd pfds[DEVICES_MAX];
+int num_devices = 0;
+
+int init_udev(struct udev_monitor ** pmon) {
+    #define mon (*pmon)
+    struct udev *udev = udev_new();
+    if (!udev) {
+        fprintf(stderr, "Не удалось создать udev\n");
+        return -1;
     }
-    #define DEVICES_MAX 60
-    struct pollfd pfds[DEVICES_MAX];
+
+    // Создаем монитор
+    mon = udev_monitor_new_from_netlink(udev, "udev");
+    udev_monitor_filter_add_match_subsystem_devtype(mon, "input", NULL);
+    udev_monitor_enable_receiving(mon);
+
+    return udev_monitor_get_fd(mon);
+    #undef mon
+}
+
+void init_pfds(int udev_fd){
+    num_devices = 0;
+    if(udev_fd>=0){
+        pfds[num_devices].fd = udev_fd;
+        pfds[num_devices].events = POLLIN;
+        num_devices++;
+    }
     Keyboard * pk = kbd_list;
-    int num_devices = 0;
     for(; num_devices<DEVICES_MAX && pk; num_devices++, pk=pk->next){
         pfds[num_devices].fd = pk->fd;
         pfds[num_devices].events = POLLIN;
     }
+}
+
+int main() {
+    setup_uinput();
+    // Открываем /dev/input/eventX
+    update_keyboards(/*NULL*/);
+    if(kbd_list==0){
+        printf("physical keyboards not found\n");
+    }
+
+    struct udev_monitor *mon;
+    int udev_fd = init_udev(&mon);
+    init_pfds(udev_fd);
 
     char path_buf[200];
     if(0>snprintf(path_buf,200,"unix:path=/run/user/%u/bus",getuid())){
@@ -613,6 +661,8 @@ int main() {
     char * (*converter)(char*) =NULL;
 
     while (1) {
+        restart:
+        if(DEBUG) printf("listen %d devices\n",num_devices);
         int ret = poll(pfds, (nfds_t)num_devices, -1); // блокировка до события
         if (ret < 0) {
             perror("poll");
@@ -621,14 +671,21 @@ int main() {
 
         for (int i = 0; i < num_devices; ++i) {
             if (pfds[i].revents & POLLIN) {
+                if(pfds[i].fd==udev_fd){
+                    udev_device_unref(udev_monitor_receive_device(mon));
+                    update_keyboards(/**/);
+                    init_pfds(udev_fd);
+                    goto restart;
+                }
                 ssize_t n = read(pfds[i].fd, &ev, sizeof(ev));
-
-                if (n < (ssize_t)sizeof(ev)) {
+                if (n < 0) {
+                    perror("read");
+                }
+                else if (n < (ssize_t)sizeof(ev)) {
                     printf("insufficient %zd\n",n);
                     continue;
-                } else if (n < 0) {
-                    perror("read");
-                } else {
+                }
+                else {
                     break;
                 }
             }

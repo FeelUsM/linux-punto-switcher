@@ -9,7 +9,7 @@ UNIT_FILE = $(SYSTEMD_USER_DIR)/linux-punto-switcher.service
 all: linux-punto-switcher # keyview
 
 linux-punto-switcher: keydeamon.c
-	$(CC) keydeamon.c -o linux-punto-switcher $(CFLAGS) $(LDFLAGS) $(shell pkg-config --cflags --libs dbus-1)
+	$(CC) keydeamon.c -o linux-punto-switcher $(CFLAGS) $(LDFLAGS) $(shell pkg-config --cflags --libs dbus-1) -ludev
 
 keyview: keyview.c
 	$(CC) keyview.c -o keyview $(CFLAGS) $(LDFLAGS) -lncurses 
