@@ -121,7 +121,7 @@ void update_keyboards(/*struct udev_device *dev*/){
     Keyboard * pk = kbd_list, ** pkprev = &kbd_list;
     while(pk){
         struct stat st;
-        if(stat(pk->filename,&st)==-1){
+        if(fstat(pk->fd,&st)==-1){
             printf("unplug Keyboard %s (%s)\n",pk->filename, pk->name);
             close(pk->fd);
             Keyboard * tmp = pk;
@@ -267,6 +267,28 @@ void setup_dbus(const char* bus_address){
     }
 }
 
+// =========== кнопки =============
+#define FL_LSHIFT 0x1
+#define FL_RSHIFT 0x2
+#define FL_SHIFT 0x3
+#define FL_LCTRL 0x4
+#define FL_RCTRL 0x8
+#define FL_CTRL 0xC
+#define FL_LWIN 0x10
+#define FL_RWIN 0x20
+#define FL_WIN 0x30
+#define FL_LALT 0x40
+#define FL_RALT 0x80
+#define FL_ALT 0xC0
+
+int check_mod(unsigned char state, unsigned char patt){
+    return 
+    (patt&FL_SHIFT ? state&FL_SHIFT : !(state&FL_SHIFT)) &&
+    (patt&FL_CTRL ? state&FL_CTRL : !(state&FL_CTRL)) &&
+    (patt&FL_WIN ? state&FL_WIN : !(state&FL_WIN)) &&
+    (patt&FL_ALT ? state&FL_ALT : !(state&FL_ALT));
+}
+
 void emit(int type, int code, int val) {
     struct input_event ie = {
         .type = (unsigned short)type,
@@ -290,14 +312,33 @@ void send_key(int keycode) {
     usleep(10);
 }
 
-void send_keycomb2(int keycode1, int keycode2) {
-    emit(EV_KEY, keycode1, 1);
-    emit(EV_KEY, keycode2, 1);
-    emit(EV_KEY, keycode2, 0);
-    emit(EV_KEY, keycode1, 0);
+typedef struct _key_comb {
+    unsigned char mod;
+    int key;
+} KeyComb;
 
+void send_keycomb(KeyComb keycomb) {
+    if(keycomb.mod&FL_SHIFT) emit(EV_KEY, KEY_LEFTSHIFT, 1);
+    if(keycomb.mod&FL_CTRL) emit(EV_KEY, KEY_LEFTCTRL, 1);
+    if(keycomb.mod&FL_ALT) emit(EV_KEY, KEY_LEFTALT, 1);
+    if(keycomb.mod&FL_WIN) emit(EV_KEY, KEY_LEFTMETA, 1);
+    if(keycomb.key!=0)emit(EV_KEY, keycomb.key, 1);
+    if(keycomb.key!=0)emit(EV_KEY, keycomb.key, 0);
+    if(keycomb.mod&FL_WIN) emit(EV_KEY, KEY_LEFTMETA, 0);
+    if(keycomb.mod&FL_ALT) emit(EV_KEY, KEY_LEFTALT, 0);
+    if(keycomb.mod&FL_CTRL) emit(EV_KEY, KEY_LEFTCTRL, 0);
+    if(keycomb.mod&FL_SHIFT) emit(EV_KEY, KEY_LEFTSHIFT, 0);
     emit(EV_SYN, SYN_REPORT, 0);
     usleep(10);
+}
+
+KeyComb change_layout_key     = {.mod=0,        .key=KEY_CAPSLOCK};
+KeyComb fix_last_word_key     = {.mod=0,        .key=KEY_PAUSE};
+KeyComb fix_selected_key      = {.mod=FL_ALT,   .key=KEY_PAUSE};
+KeyComb swapcase_selected_key = {.mod=FL_SHIFT, .key=KEY_PAUSE};
+
+void change_layout(){ // здесь раскомментируйте ваш способ изменения раскладки а остальные - какомментируйте
+    send_keycomb(change_layout_key);
 }
 
 // ========== логика pause =========
@@ -308,27 +349,12 @@ static int buffer[MAX_BUF];
 static int buf_len = 0;
 static int space_mode = 0;
 
-#define FL_LSHIFT 0x1
-#define FL_RSHIFT 0x2
-#define FL_SHIFT 0x3
-#define FL_LCTRL 0x4
-#define FL_RCTRL 0x8
-#define FL_CTRL 0xC
-#define FL_LWIN 0x10
-#define FL_RWIN 0x20
-#define FL_WIN 0x30
-#define FL_LALT 0x40
-#define FL_RALT 0x80
-#define FL_ALT 0xC0
-
-unsigned char state=0;
-
 // #define arrlen(arr) (sizeof(arr)/sizeof(arr[0]))
 
 int printable[] = {KEY_GRAVE, KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9, KEY_0, KEY_MINUS, 
 KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y, KEY_U, KEY_I, KEY_O, KEY_P, KEY_LEFTBRACE, KEY_RIGHTBRACE,
 KEY_A, KEY_S, KEY_D, KEY_F, KEY_G, KEY_H, KEY_J, KEY_K, KEY_L, KEY_SEMICOLON, KEY_APOSTROPHE, 
-KEY_Z, KEY_X, KEY_C, KEY_V, KEY_B, KEY_N, KEY_M, KEY_COMMA, KEY_DOT, 
+KEY_Z, KEY_X, KEY_C, KEY_V, KEY_B, KEY_N, KEY_M, KEY_COMMA, KEY_DOT, KEY_SLASH,
 KEY_KP7, KEY_KP8, KEY_KP9, KEY_KP4, KEY_KP5, KEY_KP6, KEY_KP1, KEY_KP2, KEY_KP3, KEY_KP0,
 0 };
 int spacelike[] = {KEY_SPACE, 0/*, KEY_ENTER*/};
@@ -341,13 +367,13 @@ int is_(int code,int printable[]) {
 const char * en_letters[] = {"`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", 
 "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]",
 "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", 
-"Z", "X", "C", "V", "B", "N", "M", ",", ".", 
+"Z", "X", "C", "V", "B", "N", "M", ",", ".", "/",
 "n7", "n8", "n9", "n4", "n5", "n6", "n1", "n2", "n3", "n0"
 };
 const char * ru_letters[] = {"ё", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", 
 "й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з", "х", "ъ",
 "ф", "ы", "в", "а", "п", "р", "о", "л", "д", "ж", "э", 
-"я", "ч", "с", "м", "и", "т", "ь", "б", "ю", 
+"я", "ч", "с", "м", "и", "т", "ь", "б", "ю", ".",
 "n7", "n8", "n9", "n4", "n5", "n6", "n1", "n2", "n3", "n0"
 };
 const char * space_letters[] = {" "/*, "\\n"*/};
@@ -534,11 +560,6 @@ void check_convert_strings(){
         exit(1);
     }
 }
-void change_layout(){ // здесь раскомментируйте ваш способ изменения раскладки а остальные - какомментируйте
-    send_key(KEY_CAPSLOCK);
-    // send_keycomb2(KEY_LEFTCTRL, KEY_LEFTSHIFT);
-}
-
 void prepr(const char * s){ // отладочная
     printf("\"");
     for(;*s; s++){
@@ -556,7 +577,7 @@ void convert(char * (*converter)(char *)){
     char * backgr = get_clipboard(); // через dbus
   //printf("background:");prepr(backgr);prn();
     usleep(dd);
-    send_keycomb2(KEY_LEFTCTRL, KEY_X); // через uinput
+    send_keycomb((KeyComb){.mod=FL_CTRL, .key=KEY_X}); // через uinput
   //printf("ctrl+x\n");
     char * selected =0;
     for(int i=0; i<35; i++){
@@ -585,7 +606,7 @@ void convert(char * (*converter)(char *)){
     set_clipboard(converted); // через dbus
   //printf("set clipboard\n");
     usleep(dd);
-    send_keycomb2(KEY_LEFTCTRL, KEY_V); // через uinput
+    send_keycomb((KeyComb){.mod=FL_CTRL, .key=KEY_V}); // через uinput
   //printf("ctrl+v\n");
     usleep(dd);
     set_clipboard(backgr); // через dbus
@@ -595,8 +616,241 @@ void convert(char * (*converter)(char *)){
     free(converted);
     // todo сделать выделение вконце----
   //printf("----\n");
-    if(converter==layout_converter)
+    if(converter==layout_converter) {
         change_layout();
+    }
+}
+// --------------- настройки ----------
+int read_blanks(FILE * file) {
+    int c = fgetc(file);
+    while(c!=EOF && isblank(c))
+        c = fgetc(file);
+    ungetc(c,file);
+    return 1;
+}
+
+int read_comment(FILE * file){
+    int c = fgetc(file);
+    if(c!='#'){
+        ungetc(c,file);
+        return 0;
+    }
+    c = fgetc(file);
+    while(c!=EOF && c!='\n')
+        c = fgetc(file);
+    ungetc(c,file);
+    return 1;
+}
+
+#define MAX_KEY_LENGTH 50
+
+int parse_err = 0;
+
+int read_key(FILE * file, char * key){
+    int c = fgetc(file);
+    if(c!=EOF && (isalnum(c) || c=='-' || c=='_')){
+        *key++ = (char)tolower(c);
+        c = fgetc(file);
+    }
+    else{
+        ungetc(c,file);
+        return 0;
+    }
+    int cnt = 2;
+    while(c!=EOF && (isalnum(c) || c=='-' || c=='_')){
+        *key++ = (char)tolower(c);
+        c = fgetc(file);
+        if(cnt++ > MAX_KEY_LENGTH){
+            *key=0;
+            if(parse_err==0)fprintf(stderr,"too long key %s\n",key);
+            // exit(1);
+        }
+    }
+    *key=0;
+    ungetc(c,file);
+    return 1;
+}
+
+const char * all_keys[] = {"reserved", "esc", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "minus", "equal",
+    "backspace", "tab", "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "leftbrace",
+    "rightbrace", "enter", "leftctrl", "a", "s", "d", "f", "g", "h", "j", "k", "l", "semicolon",
+    "apostrophe", "grave", "leftshift", "backslash", "z", "x", "c", "v", "b", "n", "m", "comma",
+    "dot", "slash", "rightshift", "kpasterisk", "leftalt", "space", "capslock", "f1", "f2",
+    "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "numlock", "scrolllock", "kp7", "kp8",
+    "kp9", "kpminus", "kp4", "kp5", "kp6", "kpplus", "kp1", "kp2", "kp3", "kp0", "kpdot",
+    "(84)", "zenkakuhankaku", "102nd", "f11", "f12", "ro", "katakana", "hiragana", "henkan",
+    "katakanahiragana", "muhenkan", "kpjpcomma", "kpenter", "rightctrl", "kpslash", "sysrq",
+    "rightalt", "linefeed", "home", "up", "pageup", "left", "right", "end", "down", "pagedown",
+    "insert", "delete", "macro", "mute", "volumedown", "volumeup", "power", "kpequal",
+    "kpplusminus", "pause", "scale", "kpcomma", "hangeul", "hanja", "yen", "leftmeta",
+    "rightmeta", "compose", "stop", "again", "props", "undo", "front", "copy", "open", "paste",
+    "find", "cut", "help", "menu", "calc", "setup", "sleep", "wakeup", "file", "sendfile",
+    "deletefile", "xfer", "prog1", "prog2", "www", "msdos", "coffee", "rotate_display",
+    "cyclewindows", "mail", "bookmarks", "computer", "back", "forward", "closecd", "ejectcd",
+    "ejectclosecd", "nextsong", "playpause", "previoussong", "stopcd", "record", "rewind",
+    "phone", "iso", "config", "homepage", "refresh", "exit", "move", "edit", "scrollup",
+    "scrolldown", "kpleftparen", "kprightparen", "new", "redo", "f13", "f14", "f15", "f16",
+    "f17", "f18", "f19", "f20", "f21", "f22", "f23", "f24", "(195)", "(196)", "(197)", "(198)",
+    "(199)", "playcd", "pausecd", "prog3", "prog4", "all_applications", "suspend", "close",
+    "play", "fastforward", "bassboost", "print", "hp", "camera", "sound", "question", "email",
+    "chat", "search", "connect", "finance", "sport", "shop", "alterase", "cancel",
+    "brightnessdown", "brightnessup", "media", "switchvideomode", "kbdillumtoggle",
+    "kbdillumdown", "kbdillumup", "send", "reply", "forwardmail", "save", "documents", "battery",
+    "bluetooth", "wlan", "uwb", "unknown", "video_next", "video_prev", "brightness_cycle",
+    "brightness_auto", "display_off", "wwan", "rfkill", "micmute"};
+
+char key_print_buf[200] = {0};
+char * key_comb2str(KeyComb keycomb){
+    char * p = key_print_buf;
+    if(keycomb.mod&FL_SHIFT)
+        p+=sprintf(p,"Shift+");
+    if(keycomb.mod&FL_ALT)
+        p+=sprintf(p,"Alt+");
+    if(keycomb.mod&FL_CTRL)
+        p+=sprintf(p,"Ctrl+");
+    if(keycomb.mod&FL_WIN)
+        p+=sprintf(p,"win+");
+    if(keycomb.key==0){
+        if(p>key_print_buf)
+            p-=1;
+    }
+    else
+        p+=sprintf(p,"%s",all_keys[keycomb.key]);
+    return key_print_buf;
+}
+
+int read_value(FILE * file, KeyComb * keycomb) {
+    char key[MAX_KEY_LENGTH] = "";
+    keycomb->mod = 0;
+    keycomb->key = 0;
+    // считываем модификаторы
+    int parsed;
+    while(1){
+        if(!read_key(file,key))
+            return 0;
+        parsed = 1;
+        if(strcmp(key,"shift")==0)
+            keycomb->mod |= FL_SHIFT;
+        else if(strcmp(key,"ctrl")==0)
+            keycomb->mod |= FL_CTRL;
+        else if(strcmp(key,"alt")==0)
+            keycomb->mod |= FL_ALT;
+        else if(strcmp(key,"meta")==0)
+            keycomb->mod |= FL_WIN;
+        else if(strcmp(key,"win")==0)
+            keycomb->mod |= FL_WIN;
+        else 
+            parsed = 0;
+
+        int c = fgetc(file);
+        if(c=='+'){
+            if(!parsed)        {
+                if(parse_err==0)fprintf(stderr,"unknown key modifier %s\n",key);
+                parse_err=1;return 0;//exit(1);
+            }
+        }
+        else{
+            ungetc(c,file);
+            break;
+        }
+    }
+    if(!parsed){
+        if(key[0]==0) return 0; // ничего не читается
+        // распознаём клавишу
+        for(size_t i=0; i< sizeof(all_keys)/sizeof(all_keys[0]); i++){
+            if(strcmp(key,all_keys[i])==0){
+                keycomb->key = (int)i;
+                return 1;
+            }
+        }
+        if(parse_err==0)fprintf(stderr,"incorrect key %s\n",key);
+        parse_err=1;return 0;//exit(1);
+    }
+    return 1;
+}
+
+int read_line(FILE * file){
+    char buf[1000];
+
+    read_blanks(file);
+    char key[MAX_KEY_LENGTH];
+    if(read_key(file,key)){
+        read_blanks(file);
+        int c = fgetc(file);
+        if(c!=':'){
+            ungetc(c,file);
+            if(parse_err==0)fprintf(stderr,"after %s expected colon(:)\n",key);
+            parse_err=1;fgets(buf,999,file);return 0;//exit(1);
+        }
+        read_blanks(file);
+        KeyComb keycomb;
+        if(!read_value(file, &keycomb)){
+            if(parse_err==0)fprintf(stderr,"expected key combination after %s:\n",key);
+            fgets(buf,999,file);return 0;//exit(1);
+        }
+        read_blanks(file);
+
+        if(strcmp(key,"change-layout")==0){
+            change_layout_key = keycomb;
+            printf("change_layout = {%hhx, %d} %s\n",change_layout_key.mod, change_layout_key.key, key_comb2str(change_layout_key));
+        }
+        else if(strcmp(key,"fix-last-word")==0){
+            if(keycomb.key==0){
+                fprintf(stderr,"fix-last-word не может состоять только из модификаторов - используется:\n");
+                parse_err=1;
+            }
+            else
+                fix_last_word_key = keycomb;
+            printf("fix_last_word = {%hhx, %d} %s\n",fix_last_word_key.mod, fix_last_word_key.key, key_comb2str(fix_last_word_key));
+        }
+        else if(strcmp(key,"fix-selected")==0){
+            if(keycomb.key==0){
+                fprintf(stderr,"fix-selected-key не может состоять только из модификаторов - используется:\n");
+                parse_err=1;
+            }
+            else
+                fix_selected_key = keycomb;
+            printf("fix_selected = {%hhx, %d} %s\n",fix_selected_key.mod, fix_selected_key.key, key_comb2str(fix_selected_key));
+        }
+        else if(strcmp(key,"swapcase-selected")==0){
+            if(keycomb.key==0){
+                fprintf(stderr,"swapcase-selected-key не может состоять только из модификаторов - используется:\n");
+                parse_err=1;
+            }
+            else
+                swapcase_selected_key = keycomb;
+            printf("swapcase_selected = {%hhx, %d} %s\n",swapcase_selected_key.mod, swapcase_selected_key.key, key_comb2str(swapcase_selected_key));
+        }
+        else {
+            fprintf(stderr,"uknown parameter %s - ignored\n",key);
+            parse_err=1;
+        }
+    }
+    read_comment(file);
+    int c = fgetc(file);
+    if(c!='\n' && c!=EOF){
+        ungetc(c,file);
+        fgets(buf,999,file);
+        if(parse_err==0)fprintf(stderr,"unexpected chars '%s'\n",buf);
+        parse_err=1;return 0;//exit(1);
+    }
+    return 1;
+}
+
+void read_settings(){
+    FILE * file  = fopen("linux-punto-config.yaml","r");
+    if(!file){
+        fprintf(stderr,"can't open file %s/linux-punto-config.yaml\n",getenv("PWD"));
+    }
+    int i=1;
+    while(!feof(file)) {
+        parse_err = 0;
+        read_line(file);
+        if(parse_err){
+            printf(" -- error on line %d\n",i);
+        }
+        i++;
+    }
 }
 
 // --------------- main ---------------
@@ -635,7 +889,14 @@ void init_pfds(int udev_fd){
     }
 }
 
+unsigned char state=0;
+
 int main() {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+
+    read_settings();
+
     setup_uinput();
     // Открываем /dev/input/eventX
     update_keyboards(/*NULL*/);
@@ -770,28 +1031,28 @@ int main() {
                     buf_len -=1;
                 }
             }
-            else if(code == KEY_PAUSE && state==0) {
+            else if(code == fix_last_word_key.key && check_mod(state,fix_last_word_key.mod)) {
                 if(value==1 && buf_len>0){
                     //printbuf();
 
+                    change_layout();
+
                     for (int i = 0; i < buf_len; ++i)
                         send_key(KEY_BACKSPACE);
-
-                    change_layout();
 
                     for (int i = 0; i < buf_len; ++i) {
                         send_key(buffer[i]);
                     }
                 }
             } 
-            else if (code == KEY_PAUSE && state&FL_ALT && !(state&!FL_ALT) ) {
+            else if (code == fix_selected_key.key && check_mod(state,fix_selected_key.mod) ) {
                 if(value==1){
                     buf_len = 0; // reset
                     space_mode = 0;
                     converter = layout_converter; // convert(converter) будет выполнен когда будут отпущены все кнопки состояния (alt и пр.)
                 }
             }
-            else if (code == KEY_PAUSE && state&FL_SHIFT && !(state&!FL_SHIFT) ) {
+            else if (code == swapcase_selected_key.key && check_mod(state,swapcase_selected_key.mod) ) {
                 if(value==1){
                     buf_len = 0; // reset
                     space_mode = 0;
