@@ -31,7 +31,7 @@ sudo make install
 make user-setup # без sudo
 ```
 редактируем `~/.config/linux-punto-config.yaml`  
-перезапускаем `systemctl --user restart linux-punto-switcher.service`
+перезапускаем `systemctl --user restart linux-punto-switcher.service`  
 **запуск без установки:**  
 редактируем `./linux-punto-setup.yaml`
 ```bash
