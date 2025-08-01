@@ -7,6 +7,27 @@ punto-switcher for linux
 - изменение регистра выделенного текста по `Shift+Pause`(можно настроить) (пока только для KDE)
 
 настройки находятся в `~/.config/linux-punto-config.yaml` 
+### как собрать и установить
+зависимости: `sudo apt install libdbus-1-dev libudev-dev`
+```bash
+make
+sudo make install
+make user-setup # без sudo
+```
+редактируем `~/.config/linux-punto-config.yaml`  
+перезапускаем `systemctl --user restart linux-punto-switcher.service`
+###### запуск без установки:
+редактируем `./linux-punto-setup.yaml`
+```bash
+sudo chown root linux-punto-switcher
+sudo chmod u+s linux-punto-switcher
+./linux-punto-switcher
+```
+###### удаление:
+```bash
+make uninstall-user # без sudo
+sudo make uninstall-system
+```
 ### как оно работает:  
 - неотступно следит за нажатием и отпусканием всех клавиш клавиатуры
 - при нажатии `Pause` (или что там у вас для `fix-last-word` в настройках)
@@ -22,40 +43,20 @@ punto-switcher for linux
 	- нажимает `Ctrl+V`
 	- восстанавливает исходное содержимое буфера обмена
 	- нажимает `CapsLock` (или что там у вас для `change-layout` в настройках)
-
-### как собрать и установить
-зависимости: `sudo apt install libdbus-1-dev libudev-dev`
-```bash
-make
-sudo make install
-make user-setup # без sudo
-```
-редактируем `~/.config/linux-punto-config.yaml`  
-перезапускаем `systemctl --user restart linux-punto-switcher.service`  
-**запуск без установки:**  
-редактируем `./linux-punto-setup.yaml`
-```bash
-sudo chown root linux-punto-switcher
-sudo chmod u+s linux-punto-switcher
-./linux-punto-switcher
-```
-**удаление:**
-```bash
-make uninstall-user # без sudo
-sudo make uninstall-system
-```
 ### системные компоненты:
 - для отслеживания клавиатуры используется `linux/input` - требует root-прав
 - для эмуляции нажатий на клавиатуру используется `linux/uinput`  - требует root-прав
 - для работы с буфером обмена используется `dbus` (который сейчас настроен на работу с KDE) - требует работу от имени пользователя
 # todo
-- сделать буфер обмена для всех wayland
+- сделать буфер обмена через dbus для gnome, xfce, ...
 - сделать буфер обмена для всех X11
+- сделать буфер обмена для всех wayland через внешний wl-clipboard
 - deb-пакет
 - из программки keyview сделать создавалку файла настроек
 - сделать реакцию на нажатия мышки (сброс буфера)
 - сделать задержку после смены раскладки (для Gnome)
 - потестировать автоопределение клавиатуры на устройствах без физической клавиатуры (tablet pc)
+- сделать буфер обмена для всех wayland нативно как в wl-clipboard
 # done
 - ~~автоопределение клавиатуры~~ 25-07-24
 - ~~сделать автоподключение устройств~~ 25-07-27

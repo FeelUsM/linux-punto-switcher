@@ -31,7 +31,10 @@
 int device_has_keyboard_keys(const char *devpath/*input*/, char * name/*output*/) {
     int fd = open(devpath, O_RDONLY);
     if (fd < 0){
-        perror(devpath);
+        char lpath[PATH_MAX];
+        strcpy(lpath,devpath);
+        strcat(lpath," [device_has_keyboard_keys]");
+        perror(lpath);
         return 0;  
     } 
 
@@ -116,12 +119,13 @@ void update_keyboards(/*struct udev_device *dev*/){
                devnode ? devnode : "нет devnode");
     }
     */
+    printf("update_keyboards\n");
 
     // проходим по списку, удаляем отключённые клавиатуры
     Keyboard * pk = kbd_list, ** pkprev = &kbd_list;
     while(pk){
         struct stat st;
-        if(fstat(pk->fd,&st)==-1){
+        if(fstat(pk->fd,&st)==-1 || stat(pk->filename,&st)==-1){
             printf("unplug Keyboard %s (%s)\n",pk->filename, pk->name);
             close(pk->fd);
             Keyboard * tmp = pk;
@@ -161,6 +165,7 @@ void update_keyboards(/*struct udev_device *dev*/){
         if (device_has_keyboard_keys(lpath, lname)) {
             int fd = open(lpath, O_RDONLY|O_NONBLOCK);
             if (fd < 0) {
+                strcat(lpath," [update_keyboards]");
                 perror(lpath);
                 //fprintf(stderr,"can't open %s (%s)\n",lpath,lname);
             }
