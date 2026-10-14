@@ -17,7 +17,7 @@ make user-setup # без sudo
 редактируем `~/.config/linux-punto-config.yaml`  
 перезапускаем `systemctl --user restart linux-punto-switcher.service`
 ###### запуск без установки:
-редактируем `./linux-punto-setup.yaml`
+редактируем `./linux-punto-config.yaml`
 ```bash
 sudo chown root linux-punto-switcher
 sudo chmod u+s linux-punto-switcher
@@ -53,7 +53,6 @@ sudo make uninstall-system
 - сделать буфер обмена для всех wayland через внешний wl-clipboard
 - deb-пакет
 - из программки keyview сделать создавалку файла настроек
-- сделать реакцию на нажатия мышки (сброс буфера)
 - сделать задержку после смены раскладки (для Gnome)
 - потестировать автоопределение клавиатуры на устройствах без физической клавиатуры (tablet pc)
 - сделать буфер обмена для всех wayland нативно как в wl-clipboard

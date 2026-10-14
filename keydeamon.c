@@ -12,11 +12,13 @@
 #include <wchar.h>
 #include <locale.h>
 
+#include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 
 #include <linux/uinput.h>
 #include <linux/input.h>
@@ -29,6 +31,7 @@
 
 // =========== настройка input =================
 int device_has_keyboard_keys(const char *devpath/*input*/, char * name/*output*/) {
+    name[0] = 0;
     int fd = open(devpath, O_RDONLY);
     if (fd < 0){
         char lpath[PATH_MAX];
@@ -93,7 +96,31 @@ int device_has_keyboard_keys(const char *devpath/*input*/, char * name/*output*/
     return low_cnt>60 && high_cnt<60;
 }
 
-typedef struct _keyboard {
+// мышки (и тачпады с кнопками) нужны, чтобы сбрасывать буфер при кликах
+int device_has_mouse_buttons(const char *devpath/*input*/, char * name/*output*/) {
+    int fd = open(devpath, O_RDONLY);
+    if (fd < 0)
+        return 0; // об ошибке уже сообщила device_has_keyboard_keys
+    unsigned long ev_bits[(EV_MAX + 7)/8] = {0};
+    unsigned long key_bits[(KEY_MAX + 7)/8] = {0};
+    if (ioctl(fd, EVIOCGBIT(0, sizeof(ev_bits)), ev_bits) < 0 ||
+        ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits) < 0) {
+        close(fd);
+        return 0;
+    }
+    int has_axes = !!(ev_bits[EV_REL / BITS_PER_LONG] & (1UL << (EV_REL % BITS_PER_LONG)))
+                || !!(ev_bits[EV_ABS / BITS_PER_LONG] & (1UL << (EV_ABS % BITS_PER_LONG)));
+    int has_left = !!(key_bits[BTN_LEFT / BITS_PER_LONG] & (1UL << (BTN_LEFT % BITS_PER_LONG)));
+    if (has_axes && has_left) {
+        if (ioctl(fd, EVIOCGNAME(PATH_MAX), name) < 0)
+            name[0] = 0;
+        if(DEBUG)printf("Мышка: %s (%s)\n", devpath, name);
+    }
+    close(fd);
+    return has_axes && has_left;
+}
+
+typedef struct _keyboard { // клавиатура или мышка
     int fd;
     char filename[PATH_MAX];
     char name[PATH_MAX];
@@ -104,6 +131,22 @@ Keyboard * kbd_list = NULL;
 void print_kbd_list(){
     for(Keyboard * pk = kbd_list; pk; pk=pk->next)
         printf("%d %s (%s)\n",pk->fd, pk->filename, pk->name);
+}
+
+// убирает из списка устройство с этим fd (например, если его отключили)
+void remove_keyboard(int fd){
+    Keyboard * pk = kbd_list, ** pkprev = &kbd_list;
+    while(pk){
+        if(pk->fd==fd){
+            printf("unplug Keyboard %s (%s)\n",pk->filename, pk->name);
+            close(pk->fd);
+            (*pkprev) = pk->next;
+            free(pk);
+            return;
+        }
+        pkprev = &(pk->next);
+        pk = pk->next;
+    }
 }
 
 void update_keyboards(/*struct udev_device *dev*/){
@@ -141,13 +184,17 @@ void update_keyboards(/*struct udev_device *dev*/){
 
     // ищем новые клавиатуры
     DIR *dir = opendir("/dev/input");
+    if(!dir){
+        perror("/dev/input [update_keyboards]");
+        return;
+    }
     struct dirent *ent;
 
     while ((ent = readdir(dir))) {
         if (strncmp(ent->d_name, "event", 5) != 0) continue;
 
         char lpath[PATH_MAX];
-        char lname[PATH_MAX];
+        char lname[PATH_MAX] = "";
         snprintf(lpath, sizeof(lpath), "/dev/input/%s", ent->d_name);
         int already = 0;
         for(pk=kbd_list; pk; pk=pk->next){
@@ -162,7 +209,7 @@ void update_keyboards(/*struct udev_device *dev*/){
         if(already)
             continue;
 
-        if (device_has_keyboard_keys(lpath, lname)) {
+        if (device_has_keyboard_keys(lpath, lname) || device_has_mouse_buttons(lpath, lname)) {
             int fd = open(lpath, O_RDONLY|O_NONBLOCK);
             if (fd < 0) {
                 strcat(lpath," [update_keyboards]");
@@ -171,6 +218,11 @@ void update_keyboards(/*struct udev_device *dev*/){
             }
             else {
                 pk = malloc(sizeof(Keyboard));
+                if(pk==NULL){
+                    perror("malloc");
+                    close(fd);
+                    continue;
+                }
                 pk->next = kbd_list;
                 kbd_list = pk;
                 pk->fd = fd;
@@ -356,9 +408,9 @@ static int space_mode = 0;
 
 // #define arrlen(arr) (sizeof(arr)/sizeof(arr[0]))
 
-int printable[] = {KEY_GRAVE, KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9, KEY_0, KEY_MINUS, 
+int printable[] = {KEY_GRAVE, KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9, KEY_0, KEY_MINUS, KEY_EQUAL,
 KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y, KEY_U, KEY_I, KEY_O, KEY_P, KEY_LEFTBRACE, KEY_RIGHTBRACE,
-KEY_A, KEY_S, KEY_D, KEY_F, KEY_G, KEY_H, KEY_J, KEY_K, KEY_L, KEY_SEMICOLON, KEY_APOSTROPHE, 
+KEY_A, KEY_S, KEY_D, KEY_F, KEY_G, KEY_H, KEY_J, KEY_K, KEY_L, KEY_SEMICOLON, KEY_APOSTROPHE, KEY_BACKSLASH,
 KEY_Z, KEY_X, KEY_C, KEY_V, KEY_B, KEY_N, KEY_M, KEY_COMMA, KEY_DOT, KEY_SLASH,
 KEY_KP7, KEY_KP8, KEY_KP9, KEY_KP4, KEY_KP5, KEY_KP6, KEY_KP1, KEY_KP2, KEY_KP3, KEY_KP0,
 0 };
@@ -369,15 +421,29 @@ int is_(int code,int printable[]) {
             return 1;
     return 0;
 }
-const char * en_letters[] = {"`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", 
+int numpad[] = {KEY_KP7, KEY_KP8, KEY_KP9, KEY_KP4, KEY_KP5, KEY_KP6, KEY_KP1, KEY_KP2, KEY_KP3, KEY_KP0, 0};
+
+// включён ли NumLock на устройстве fd (если не получилось узнать - считаем, что включён)
+int numlock_on(int fd){
+    unsigned char supported[(LED_MAX + 7)/8 + 1] = {0};
+    unsigned char leds[(LED_MAX + 7)/8 + 1] = {0};
+    if(ioctl(fd, EVIOCGBIT(EV_LED, sizeof(supported)), supported) < 0 ||
+       !(supported[LED_NUML/8] & (1 << (LED_NUML%8))))
+        return 1; // у устройства нет индикатора NumLock
+    if(ioctl(fd, EVIOCGLED(sizeof(leds)), leds) < 0)
+        return 1;
+    return (leds[LED_NUML/8] >> (LED_NUML%8)) & 1;
+}
+
+const char * en_letters[] = {"`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=",
 "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]",
-"A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", 
+"A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "\\",
 "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/",
 "n7", "n8", "n9", "n4", "n5", "n6", "n1", "n2", "n3", "n0"
 };
-const char * ru_letters[] = {"ё", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", 
+const char * ru_letters[] = {"ё", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=",
 "й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з", "х", "ъ",
-"ф", "ы", "в", "а", "п", "р", "о", "л", "д", "ж", "э", 
+"ф", "ы", "в", "а", "п", "р", "о", "л", "д", "ж", "э", "\\",
 "я", "ч", "с", "м", "и", "т", "ь", "б", "ю", ".",
 "n7", "n8", "n9", "n4", "n5", "n6", "n1", "n2", "n3", "n0"
 };
@@ -390,6 +456,7 @@ void printbuf(){ // отладочная
         int keycode = buffer[i];
         int shift = keycode&SHIFT_BIT;
         keycode &= ~SHIFT_BIT;
+
         size_t j=0;
         for(; printable[j]; j++)
             if(keycode==printable[j])
@@ -399,15 +466,16 @@ void printbuf(){ // отладочная
             else printf("%s",en_letters[j]);
         }
         else {
-            for(;spacelike[j]; j++)
-                if(keycode==spacelike[j])
+            size_t k=0;
+            for(; spacelike[k]; k++)
+                if(keycode==spacelike[k])
                     break;
-            if(spacelike[j]==0) {
-                printf("AT POSITION %u BAD CODE %d\n",i,keycode);
+            if(spacelike[k]==0) {
+                printf("AT POSITION %d BAD CODE %d\n",i,keycode);
                 cleanup();
                 exit(1);
             }
-            printf("+%s",en_letters[j]);
+            printf("%s",space_letters[k]);
         }
     }
 
@@ -415,21 +483,21 @@ void printbuf(){ // отладочная
 }
 
 // ========== логика alt+pause, shift+pause ================
-char * get_clipboard(){ // производящая
+char * get_clipboard(){ // производящая; при ошибке пишет в stderr и возвращает NULL
     DBusMessage* msg;
     DBusMessage* reply;
     char* result;
 
     // Создание метода вызова: getClipboardContents
     msg = dbus_message_new_method_call(
-        "org.kde.klipper",               // service
-        "/klipper",                      // path
-        "org.kde.klipper.klipper",       // interface
-        "getClipboardContents"          // method
+        "org.kde.klipper", // service
+        "/klipper", // path
+        "org.kde.klipper.klipper", // interface
+        "getClipboardContents" // method
     );
     if (!msg) {
         fprintf(stderr, "Не удалось создать сообщение\n");
-        exit(1);
+        return NULL;
     }
 
     // Отправка и ожидание ответа
@@ -439,7 +507,7 @@ char * get_clipboard(){ // производящая
     if (dbus_error_is_set(&dbus_err)) {
         fprintf(stderr, "Ошибка вызова метода: %s\n", dbus_err.message);
         dbus_error_free(&dbus_err);
-        exit(1);
+        return NULL;
     }
 
     // Чтение строки из ответа
@@ -449,53 +517,57 @@ char * get_clipboard(){ // производящая
         fprintf(stderr, "Ошибка чтения ответа: %s\n", dbus_err.message);
         dbus_error_free(&dbus_err);
         dbus_message_unref(reply);
-        exit(1);
+        return NULL;
     }
-
     char * output = malloc(strlen(result)+5);
     if(output==NULL){
         perror("malloc:");
-        exit(1);
+        dbus_message_unref(reply);
+        return NULL;
     }
     strcpy(output,result);
-
     dbus_message_unref(reply);
 
     return output;
 }
-void set_clipboard(char * text){
+int set_clipboard(char * text){ // при ошибке пишет в stderr и возвращает 0
     DBusMessage* msg;
     DBusMessageIter args;
-    //DBusPendingCall* pending;
 
     // Создаём метод-вызов setClipboardContents
     msg = dbus_message_new_method_call(
-        "org.kde.klipper",              // имя сервиса
-        "/klipper",                     // путь
-        "org.kde.klipper.klipper",      // интерфейс
-        "setClipboardContents"          // метод
+        "org.kde.klipper", // имя сервиса
+        "/klipper", // путь
+        "org.kde.klipper.klipper", // интерфейс
+        "setClipboardContents" // метод
     );
     if (!msg) {
         fprintf(stderr, "Не удалось создать сообщение\n");
-        exit(1);
+        return 0;
     }
 
     // Добавляем аргументы (строку)
     dbus_message_iter_init_append(msg, &args);
     if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &text)) {
         fprintf(stderr, "Не удалось добавить аргумент\n");
-        exit(1);
+        dbus_message_unref(msg);
+        return 0;
     }
 
-    // Отправляем и игнорируем ответ
+    // Отправляем и игнорируем ответ (no_reply, иначе ответы копились бы в очереди соединения)
+    dbus_message_set_no_reply(msg, TRUE);
     if (!dbus_connection_send(dbus_conn, msg, NULL)) {
         fprintf(stderr, "Отправка не удалась\n");
-        exit(1);
+        dbus_message_unref(msg);
+        return 0;
     }
-
     dbus_connection_flush(dbus_conn);
     dbus_message_unref(msg);
+    return 1;
 }
+
+// если выделено больше символов - ничего не делаем
+#define MAX_CONVERT_LEN 1000
 
 char * common_converter(char * s, const wchar_t * layout_ru, const wchar_t * layout_en){ // производящая
     size_t buf_len = mbstowcs(NULL,s,0);
@@ -580,48 +652,75 @@ void prn() { printf("\n"); } // отладочная
 void convert(char * (*converter)(char *)){
     #define dd 50000
     char * backgr = get_clipboard(); // через dbus
-  //printf("background:");prepr(backgr);prn();
+    if(backgr==NULL){
+        fprintf(stderr,"convert: can't read clipboard - nothing done\n");
+        return;
+    }
+    //printf("background:");prepr(backgr);prn();
     usleep(dd);
     send_keycomb((KeyComb){.mod=FL_CTRL, .key=KEY_X}); // через uinput
-  //printf("ctrl+x\n");
-    char * selected =0;
+    //printf("ctrl+x\n");
+
+    char * selected = 0;
+    int changed = 0; // поменялся ли clipboard, т.е. вырезалось ли что-нибудь
     for(int i=0; i<35; i++){
         usleep(10000); // каждые 10 мс
+        free(selected);
         selected = get_clipboard(); // через dbus
-        if(strcmp(selected,backgr)!=0) // проверяем, не поменялся ли clipboard
+        if(selected==NULL)
             break;
-        else{
-            free(selected);
-            selected = 0;
+        if(strcmp(selected,backgr)!=0){ // проверяем, не поменялся ли clipboard
+            changed = 1;
+            break;
         }
     }
-    if(selected==0)
-        selected = get_clipboard(); // через dbus
+    if(selected==NULL){
+        fprintf(stderr,"convert: can't read clipboard after ctrl+x - nothing done (cut text stays in clipboard)\n");
+        free(backgr);
+        return;
+    }
+    //printf("selected:");prepr(selected);printf(" -> ");
 
-  //printf("selected:");prepr(selected);printf(" -> ");
-    char * converted = converter(selected);
+    int done = 1; // выполнено ли преобразование
+    char * converted = NULL;
+    size_t selected_len = mbstowcs(NULL,selected,0);
+    if(selected_len!=(size_t)-1 && selected_len>MAX_CONVERT_LEN){
+        fprintf(stderr,"convert: selection is too long (%zu > %d chars) - nothing done\n",selected_len,MAX_CONVERT_LEN);
+        if(!changed){ // ничего не вырезалось - делать нечего
+            free(backgr);
+            free(selected);
+            return;
+        }
+        done = 0; // вырезанный текст вставляется обратно без изменений
+    }
+    else
+        converted = converter(selected);
     if(converted==NULL){
+        done = 0;
         if((converted = malloc(strlen(selected)+1))==NULL){
             perror("converted = malloc()");
             exit(1);
         }
         strcpy(converted, selected);
     }
-  //printf("converted:");prepr(converted);prn();
-    set_clipboard(converted); // через dbus
-  //printf("set clipboard\n");
+    //printf("converted:");prepr(converted);prn();
+    if(!set_clipboard(converted)) // через dbus
+        done = 0; // в clipboard остался вырезанный текст - он и вставится
+    //printf("set clipboard\n");
     usleep(dd);
     send_keycomb((KeyComb){.mod=FL_CTRL, .key=KEY_V}); // через uinput
-  //printf("ctrl+v\n");
+    //printf("ctrl+v\n");
     usleep(dd);
     set_clipboard(backgr); // через dbus
-  //printf("set backgound\n");
+    //printf("set backgound\n");
+
     free(backgr);
     free(selected);
     free(converted);
+
     // todo сделать выделение вконце----
   //printf("----\n");
-    if(converter==layout_converter) {
+    if(done && converter==layout_converter) {
         change_layout();
     }
 }
@@ -661,15 +760,18 @@ int read_key(FILE * file, char * key){
         ungetc(c,file);
         return 0;
     }
-    int cnt = 2;
+    int cnt = 1; // сколько символов уже записано в key
     while(c!=EOF && (isalnum(c) || c=='-' || c=='_')){
-        *key++ = (char)tolower(c);
-        c = fgetc(file);
-        if(cnt++ > MAX_KEY_LENGTH){
+        if(cnt+1 >= MAX_KEY_LENGTH){ // +1 для завершающего нуля
             *key=0;
-            if(parse_err==0)fprintf(stderr,"too long key %s\n",key);
-            // exit(1);
+            if(parse_err==0)fprintf(stderr,"too long key %s...\n",key-cnt);
+            parse_err=1;
+            ungetc(c,file);
+            return 0;
         }
+        *key++ = (char)tolower(c);
+        cnt++;
+        c = fgetc(file);
     }
     *key=0;
     ungetc(c,file);
@@ -707,6 +809,7 @@ const char * all_keys[] = {"reserved", "esc", "1", "2", "3", "4", "5", "6", "7",
 char key_print_buf[200] = {0};
 char * key_comb2str(KeyComb keycomb){
     char * p = key_print_buf;
+    *p = 0;
     if(keycomb.mod&FL_SHIFT)
         p+=sprintf(p,"Shift+");
     if(keycomb.mod&FL_ALT)
@@ -716,8 +819,10 @@ char * key_comb2str(KeyComb keycomb){
     if(keycomb.mod&FL_WIN)
         p+=sprintf(p,"win+");
     if(keycomb.key==0){
-        if(p>key_print_buf)
+        if(p>key_print_buf){
             p-=1;
+            *p = 0; // убираем завершающий +
+        }
     }
     else
         p+=sprintf(p,"%s",all_keys[keycomb.key]);
@@ -774,6 +879,12 @@ int read_value(FILE * file, KeyComb * keycomb) {
     return 1;
 }
 
+// комбинация совпадает с обычным набором текста (буква/цифра/знак/пробел/backspace без модификаторов или только с shift)
+int is_typing_keycomb(KeyComb keycomb){
+    return (is_(keycomb.key,printable) || is_(keycomb.key,spacelike) || keycomb.key==KEY_BACKSPACE)
+        && (keycomb.mod & ~FL_SHIFT)==0;
+}
+
 int read_line(FILE * file){
     char buf[1000];
 
@@ -804,6 +915,10 @@ int read_line(FILE * file){
                 fprintf(stderr,"fix-last-word не может состоять только из модификаторов - используется:\n");
                 parse_err=1;
             }
+            else if(is_typing_keycomb(keycomb)){
+                fprintf(stderr,"fix-last-word не может быть обычной клавишей набора без модификаторов (shift не считается) - используется:\n");
+                parse_err=1;
+            }
             else
                 fix_last_word_key = keycomb;
             printf("fix_last_word = {%hhx, %d} %s\n",fix_last_word_key.mod, fix_last_word_key.key, key_comb2str(fix_last_word_key));
@@ -813,6 +928,10 @@ int read_line(FILE * file){
                 fprintf(stderr,"fix-selected-key не может состоять только из модификаторов - используется:\n");
                 parse_err=1;
             }
+            else if(is_typing_keycomb(keycomb)){
+                fprintf(stderr,"fix-selected-key не может быть обычной клавишей набора без модификаторов (shift не считается) - используется:\n");
+                parse_err=1;
+            }
             else
                 fix_selected_key = keycomb;
             printf("fix_selected = {%hhx, %d} %s\n",fix_selected_key.mod, fix_selected_key.key, key_comb2str(fix_selected_key));
@@ -820,6 +939,10 @@ int read_line(FILE * file){
         else if(strcmp(key,"swapcase-selected")==0){
             if(keycomb.key==0){
                 fprintf(stderr,"swapcase-selected-key не может состоять только из модификаторов - используется:\n");
+                parse_err=1;
+            }
+            else if(is_typing_keycomb(keycomb)){
+                fprintf(stderr,"swapcase-selected-key не может быть обычной клавишей набора без модификаторов (shift не считается) - используется:\n");
                 parse_err=1;
             }
             else
@@ -846,6 +969,7 @@ void read_settings(){
     FILE * file  = fopen("linux-punto-config.yaml","r");
     if(!file){
         fprintf(stderr,"can't open file %s/linux-punto-config.yaml\n",getenv("PWD"));
+        return;
     }
     int i=1;
     while(!feof(file)) {
@@ -856,6 +980,7 @@ void read_settings(){
         }
         i++;
     }
+    fclose(file);
 }
 
 // --------------- main ---------------
@@ -895,6 +1020,141 @@ void init_pfds(int udev_fd){
 }
 
 unsigned char state=0;
+char * (*converter)(char*) = NULL;
+
+// обработка одного события кнопки (клавиатура или мышка); fd - устройство, от которого оно пришло
+void process_key(int code, int value, int fd) {
+    //printf("%d %d %x %p\n",value, code, state, converter);
+    if(code == KEY_LEFTSHIFT){
+        if(value) state |= FL_LSHIFT;
+        else state &= ~FL_LSHIFT;
+        if(state==0 && converter) { convert(converter); converter = 0; }
+    }
+    else if(code == KEY_RIGHTSHIFT){
+        if(value) state |= FL_RSHIFT;
+        else state &= ~FL_RSHIFT;
+        if(state==0 && converter) { convert(converter); converter = 0; }
+    }
+    else if(code == KEY_LEFTCTRL){
+        if(value) state |= FL_LCTRL;
+        else state &= ~FL_LCTRL;
+        if(state==0 && converter) { convert(converter); converter = 0; }
+    }
+    else if(code == KEY_RIGHTCTRL){
+        if(value) state |= FL_RCTRL;
+        else state &= ~FL_RCTRL;
+        if(state==0 && converter) { convert(converter); converter = 0; }
+    }
+    else if(code == KEY_LEFTMETA){
+        if(value) state |= FL_LWIN;
+        else state &= ~FL_LWIN;
+        if(state==0 && converter) { convert(converter); converter = 0; }
+    }
+    else if(code == KEY_RIGHTMETA){
+        if(value) state |= FL_RWIN;
+        else state &= ~FL_RWIN;
+        if(state==0 && converter) { convert(converter); converter = 0; }
+    }
+    else if(code == KEY_LEFTALT){
+        if(value) state |= FL_LALT;
+        else state &= ~FL_LALT;
+        if(state==0 && converter) { convert(converter); converter = 0; }
+    }
+    else if(code == KEY_RIGHTALT){
+        if(value) state |= FL_RALT;
+        else state &= ~FL_RALT;
+        if(state==0 && converter) { convert(converter); converter = 0; }
+    }
+    // горячие клавиши проверяются раньше обычного набора, чтобы можно было использовать, например, ctrl+minus
+    // (комбинации, совпадающие с обычным набором, отсеиваются при чтении настроек)
+    else if(code == fix_last_word_key.key && check_mod(state,fix_last_word_key.mod)) {
+        if(value==1 && buf_len>0){
+            //printbuf();
+
+            change_layout();
+
+            for (int i = 0; i < buf_len; ++i)
+                send_key(KEY_BACKSPACE);
+
+            for (int i = 0; i < buf_len; ++i) {
+                send_key(buffer[i]);
+            }
+        }
+    }
+    else if (code == fix_selected_key.key && check_mod(state,fix_selected_key.mod) ) {
+        if(value==1){
+            buf_len = 0; // reset
+            space_mode = 0;
+            converter = layout_converter; // convert(converter) будет выполнен когда будут отпущены все кнопки состояния (alt и пр.)
+        }
+    }
+    else if (code == swapcase_selected_key.key && check_mod(state,swapcase_selected_key.mod) ) {
+        if(value==1){
+            buf_len = 0; // reset
+            space_mode = 0;
+            converter = shift_converter; // convert(converter) будет выполнен когда будут отпущены все кнопки состояния (alt и пр.)
+        }
+    }
+    else if(is_(code,printable)){
+        if(value!=0){ // нажатие (1) или автоповтор (2)
+            if(state& ~FL_SHIFT){
+                if(code==KEY_S)
+                    ; // ignore ctrl+S, alt+S, win+S, ctrl+alt+S ...
+                else
+                    buf_len = 0; // reset
+            }
+            else if(is_(code,numpad) && numlock_on(fd)==((state&FL_SHIFT)!=0)){
+                // numpad работает как стрелки/home/end/... (NumLock выключен, либо включён, но зажат shift)
+                buf_len = 0; // reset
+                space_mode = 0;
+            }
+            else {
+                if(buf_len>=MAX_BUF)
+                    buf_len=0;
+                if(space_mode!=0){
+                    buf_len = 0;
+                    space_mode = 0;
+                }
+                if(state&FL_SHIFT)
+                    buffer[buf_len++] = code|SHIFT_BIT;
+                else
+                    buffer[buf_len++] = code;
+            }
+        }
+    }
+    else if(is_(code,spacelike) && state==0){
+        if(value!=0) { // нажатие (1) или автоповтор (2)
+            space_mode = 1;
+            if(buf_len>=MAX_BUF)
+                buf_len=0;
+            buffer[buf_len++] = code;
+        }
+    }
+    else if(code == KEY_BACKSPACE && state==0) {
+        if(value!=0 && buf_len>0){ // нажатие (1) или автоповтор (2)
+            buf_len -=1;
+        }
+    }
+    else if(code>=BTN_MOUSE && code<=BTN_TASK){ // клик мышки - курсор мог переместиться
+        if(value==1){
+            buf_len = 0; // reset
+            space_mode = 0;
+        }
+    }
+    else if(code>=BTN_DIGI && code<=BTN_TOOL_QUADTAP){
+        ; // касания тачпада/планшета - это не клики, буфер не сбрасываем
+    }
+    else {
+        buf_len = 0; // reset
+        space_mode = 0;
+    }
+}
+
+void setup_locale(){
+    // строки из D-Bus всегда в UTF-8, поэтому от LANG не зависим (в systemd-сервисе его может не быть)
+    if(setlocale(LC_CTYPE, "C.UTF-8")==NULL && setlocale(LC_CTYPE, "")==NULL)
+        fprintf(stderr,"can't set locale - conversion of selected text may not work\n");
+}
 
 int main() {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -920,17 +1180,17 @@ int main() {
     };
     setup_dbus(path_buf);
 
-    setlocale(LC_CTYPE, "");
+    setup_locale();
     check_convert_strings();
 
-    struct input_event ev;
-    char * (*converter)(char*) =NULL;
+    struct input_event evs[64];
 
     while (1) {
         restart:
         if(DEBUG) printf("listen %d devices\n",num_devices);
         int ret = poll(pfds, (nfds_t)num_devices, -1); // блокировка до события
         if (ret < 0) {
+            if(errno==EINTR) continue;
             perror("poll");
             break;
         }
@@ -943,130 +1203,28 @@ int main() {
                     init_pfds(udev_fd);
                     goto restart;
                 }
-                ssize_t n = read(pfds[i].fd, &ev, sizeof(ev));
+                ssize_t n = read(pfds[i].fd, evs, sizeof(evs));
                 if (n < 0) {
-                    perror("read");
-                }
-                else if (n < (ssize_t)sizeof(ev)) {
-                    printf("insufficient %zd\n",n);
-                    continue;
+                    if(errno==ENODEV){ // устройство отключили
+                        remove_keyboard(pfds[i].fd);
+                        init_pfds(udev_fd);
+                        goto restart;
+                    }
+                    if(errno!=EAGAIN && errno!=EINTR)
+                        perror("read");
                 }
                 else {
-                    break;
+                    // ядро отдаёт только целые события
+                    for(size_t k=0; k<(size_t)n/sizeof(evs[0]); k++)
+                        if(evs[k].type == EV_KEY) // нажатия клавиш и кнопок мышки
+                            process_key(evs[k].code, evs[k].value, pfds[i].fd);
                 }
             }
-        }
-
-        if (ev.type == EV_KEY) { // key press
-            int code = ev.code;
-            int value = ev.value;
-            //printf("%d %d %x %p\n",value, code, state, converter);
-            if(code == KEY_LEFTSHIFT){
-                if(value) state |= FL_LSHIFT;
-                else state &= ~FL_LSHIFT;
-                if(state==0 && converter) { convert(converter); converter = 0; }
-            }
-            else if(code == KEY_RIGHTSHIFT){
-                if(value) state |= FL_RSHIFT;
-                else state &= ~FL_RSHIFT;
-                if(state==0 && converter) { convert(converter); converter = 0; }
-            }
-            else if(code == KEY_LEFTCTRL){
-                if(value) state |= FL_LCTRL;
-                else state &= ~FL_LCTRL;
-                if(state==0 && converter) { convert(converter); converter = 0; }
-            }
-            else if(code == KEY_RIGHTCTRL){
-                if(value) state |= FL_RCTRL;
-                else state &= ~FL_RCTRL;
-                if(state==0 && converter) { convert(converter); converter = 0; }
-            }
-            else if(code == KEY_LEFTMETA){
-                if(value) state |= FL_LWIN;
-                else state &= ~FL_LWIN;
-                if(state==0 && converter) { convert(converter); converter = 0; }
-            }
-            else if(code == KEY_RIGHTMETA){
-                if(value) state |= FL_RWIN;
-                else state &= ~FL_RWIN;
-                if(state==0 && converter) { convert(converter); converter = 0; }
-            }
-            else if(code == KEY_LEFTALT){
-                if(value) state |= FL_LALT;
-                else state &= ~FL_LALT;
-                if(state==0 && converter) { convert(converter); converter = 0; }
-            }
-            else if(code == KEY_RIGHTALT){
-                if(value) state |= FL_RALT;
-                else state &= ~FL_RALT;
-                if(state==0 && converter) { convert(converter); converter = 0; }
-            }
-            else if(is_(code,printable)){
-                if(value==1){
-                    if(state& ~FL_SHIFT){
-                        if(code==KEY_S)
-                            ; // ignore ctrl+S, alt+S, win+S, ctrl+alt+S ...
-                        else
-                            buf_len = 0; // reset
-                    }
-                    else {
-                        if(buf_len>=MAX_BUF)
-                            buf_len=0;
-                        if(space_mode!=0){
-                            buf_len = 0;
-                            space_mode = 0;
-                        }
-                        if(state&FL_SHIFT)
-                            buffer[buf_len++] = code|SHIFT_BIT;
-                        else
-                            buffer[buf_len++] = code;
-                    }
-                }
-            }
-            else if(is_(code,spacelike) && state==0){
-                if(value==1) {
-                    space_mode = 1;
-                    if(buf_len>=MAX_BUF)
-                        buf_len=0;
-                    buffer[buf_len++] = code;
-                }
-            }
-            else if(code == KEY_BACKSPACE && state==0) {
-                if(value==1 && buf_len>0){
-                    buf_len -=1;
-                }
-            }
-            else if(code == fix_last_word_key.key && check_mod(state,fix_last_word_key.mod)) {
-                if(value==1 && buf_len>0){
-                    //printbuf();
-
-                    change_layout();
-
-                    for (int i = 0; i < buf_len; ++i)
-                        send_key(KEY_BACKSPACE);
-
-                    for (int i = 0; i < buf_len; ++i) {
-                        send_key(buffer[i]);
-                    }
-                }
-            } 
-            else if (code == fix_selected_key.key && check_mod(state,fix_selected_key.mod) ) {
-                if(value==1){
-                    buf_len = 0; // reset
-                    space_mode = 0;
-                    converter = layout_converter; // convert(converter) будет выполнен когда будут отпущены все кнопки состояния (alt и пр.)
-                }
-            }
-            else if (code == swapcase_selected_key.key && check_mod(state,swapcase_selected_key.mod) ) {
-                if(value==1){
-                    buf_len = 0; // reset
-                    space_mode = 0;
-                    converter = shift_converter; // convert(converter) будет выполнен когда будут отпущены все кнопки состояния (alt и пр.)
-                }
-            }
-            else {
-                buf_len = 0; // reset
-                space_mode = 0;
+            else if(pfds[i].fd!=udev_fd && (pfds[i].revents & (POLLERR|POLLHUP|POLLNVAL))){
+                // устройство сломалось, poll теперь возвращался бы сразу же - убираем его
+                remove_keyboard(pfds[i].fd);
+                init_pfds(udev_fd);
+                goto restart;
             }
         }
         usleep(1000);
