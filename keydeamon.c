@@ -590,8 +590,8 @@ char * common_converter(char * s, const wchar_t * layout_ru, const wchar_t * lay
             en_count++;
     }
     for(size_t i=0; i<buf_len; i++){
-        wchar_t * p_ru = wcschr(layout_ru,buf[i]);
-        wchar_t * p_en = wcschr(layout_en,buf[i]);
+        const wchar_t * p_ru = wcschr(layout_ru,buf[i]);
+        const wchar_t * p_en = wcschr(layout_en,buf[i]);
         if(p_ru!=NULL && p_en!=NULL) {
             if(ru_count>en_count) p_en=NULL;
             else if(ru_count<en_count) p_ru=NULL;
@@ -616,13 +616,17 @@ char * common_converter(char * s, const wchar_t * layout_ru, const wchar_t * lay
     return out;
 }
 
-const wchar_t * layout_ru = L"ё1234567890-=Ё!\"№;%:?*()_+йцукенгшщзхъЙЦУКЕНГШЩЗХЪфывапролджэ\\ФЫВАПРОЛДЖЭ/ячсмитьбю.ЯЧСМИТЬБЮ,";
-const wchar_t * layout_en = L"`1234567890-=~!@#$%^&*()_+qwertyuiop[]QWERTYUIOP{}asdfghjkl;'\\ASDFGHJKL:\"|zxcvbnm,./ZXCVBNM<>?";
+const wchar_t def_layout_ru[] = L"ё1234567890-=Ё!\"№;%:?*()_+йцукенгшщзхъЙЦУКЕНГШЩЗХЪфывапролджэ\\ФЫВАПРОЛДЖЭ/ячсмитьбю.ЯЧСМИТЬБЮ,";
+const wchar_t * layout_ru = def_layout_ru;
+const wchar_t def_layout_en[] = L"`1234567890-=~!@#$%^&*()_+qwertyuiop[]QWERTYUIOP{}asdfghjkl;'\\ASDFGHJKL:\"|zxcvbnm,./ZXCVBNM<>?";
+const wchar_t * layout_en = def_layout_en;
 char * layout_converter(char * s){ // производящая
     return common_converter(s, layout_ru, layout_en);
 }
-const wchar_t * layout_lo = L"qwertyuiopasdfghjklzxcvbnmёйцукенгшщзхъфывапролджэячсмитьбю";
-const wchar_t * layout_up = L"QWERTYUIOPASDFGHJKLZXCVBNMЁЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ";
+const wchar_t def_layout_lo[] = L"qwertyuiopasdfghjklzxcvbnmёйцукенгшщзхъфывапролджэячсмитьбю";
+const wchar_t * layout_lo = def_layout_lo;
+const wchar_t def_layout_up[] = L"QWERTYUIOPASDFGHJKLZXCVBNMЁЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ";
+const wchar_t * layout_up = def_layout_up;
 char * shift_converter(char * s){ // производящая
     return common_converter(s, layout_lo, layout_up);
 }
@@ -879,6 +883,92 @@ int read_value(FILE * file, KeyComb * keycomb) {
     return 1;
 }
 
+#define MAX_LAYOUT_BYTES 4000
+// читает строку в двойных кавычках; внутри \\ означает \, а \" означает ".
+// возвращает широкую строку (malloc) или NULL (если строки нет - без сообщения, если она некорректна - с сообщением и parse_err)
+wchar_t * read_wstring(FILE * file){
+    int c = fgetc(file);
+    if(c!='"'){
+        ungetc(c,file);
+        return NULL;
+    }
+    char buf[MAX_LAYOUT_BYTES];
+    size_t len = 0;
+    const char * err = NULL;
+    while(1){
+        c = fgetc(file);
+        if(c==EOF || c=='\n'){
+            ungetc(c,file);
+            err = "unterminated string";
+            break;
+        }
+        if(c=='"')
+            break;
+        if(c=='\\'){
+            c = fgetc(file);
+            if(c!='\\' && c!='"'){
+                ungetc(c,file);
+                err = "unknown escape sequence in string (allowed: \\\\ and \\\")";
+                break;
+            }
+        }
+        if(len+1 >= sizeof(buf)){
+            err = "string is too long";
+            break;
+        }
+        buf[len++] = (char)c;
+    }
+    wchar_t * out = NULL;
+    if(!err){
+        buf[len] = 0;
+        size_t n = mbstowcs(NULL,buf,0);
+        if(n==(size_t)-1)
+            err = "incorrect UTF-8 sequence in string";
+        else{
+            out = malloc((n+1)*sizeof(wchar_t));
+            if(out==NULL){
+                perror("malloc");
+                exit(1);
+            }
+            mbstowcs(out,buf,n+1);
+        }
+    }
+    if(err){
+        if(parse_err==0)fprintf(stderr,"%s\n",err);
+        parse_err=1;
+        // дочитываем строку до конца, перевод строки оставляем вызывающему
+        int c2 = fgetc(file);
+        while(c2!='\n' && c2!=EOF)
+            c2 = fgetc(file);
+        ungetc(c2,file);
+    }
+    return out;
+}
+
+// параметры-строки: layout-ru, layout-en, layout-lo, layout-up
+// возвращает -1 если key - не такой параметр, 0 - ошибка чтения, 1 - прочитано
+int read_layout_param(FILE * file, const char * key){
+    const wchar_t ** target;
+    const wchar_t * def;
+    if(strcmp(key,"layout-ru")==0)      { target = &layout_ru; def = def_layout_ru; }
+    else if(strcmp(key,"layout-en")==0) { target = &layout_en; def = def_layout_en; }
+    else if(strcmp(key,"layout-lo")==0) { target = &layout_lo; def = def_layout_lo; }
+    else if(strcmp(key,"layout-up")==0) { target = &layout_up; def = def_layout_up; }
+    else return -1;
+
+    wchar_t * value = read_wstring(file);
+    if(value==NULL){
+        if(parse_err==0)fprintf(stderr,"expected string in double quotes after %s:\n",key);
+        parse_err=1;
+        return 0;
+    }
+    if(*target!=def)
+        free((void*)*target);
+    *target = value;
+    printf("%s = %zu chars\n",key,wcslen(value));
+    return 1;
+}
+
 // комбинация совпадает с обычным набором текста (буква/цифра/знак/пробел/backspace без модификаторов или только с shift)
 int is_typing_keycomb(KeyComb keycomb){
     return (is_(keycomb.key,printable) || is_(keycomb.key,spacelike) || keycomb.key==KEY_BACKSPACE)
@@ -899,14 +989,21 @@ int read_line(FILE * file){
             parse_err=1;fgets(buf,999,file);return 0;//exit(1);
         }
         read_blanks(file);
-        KeyComb keycomb;
-        if(!read_value(file, &keycomb)){
+        int layout_res = read_layout_param(file,key);
+        if(layout_res==0){
+            fgets(buf,999,file);return 0;
+        }
+        KeyComb keycomb = {0, 0};
+        if(layout_res<0 && !read_value(file, &keycomb)){
             if(parse_err==0)fprintf(stderr,"expected key combination after %s:\n",key);
             fgets(buf,999,file);return 0;//exit(1);
         }
         read_blanks(file);
 
-        if(strcmp(key,"change-layout")==0){
+        if(layout_res>0){
+            ; // строковый параметр уже прочитан
+        }
+        else if(strcmp(key,"change-layout")==0){
             change_layout_key = keycomb;
             printf("change_layout = {%hhx, %d} %s\n",change_layout_key.mod, change_layout_key.key, key_comb2str(change_layout_key));
         }
@@ -925,11 +1022,11 @@ int read_line(FILE * file){
         }
         else if(strcmp(key,"fix-selected")==0){
             if(keycomb.key==0){
-                fprintf(stderr,"fix-selected-key не может состоять только из модификаторов - используется:\n");
+                fprintf(stderr,"fix-selected не может состоять только из модификаторов - используется:\n");
                 parse_err=1;
             }
             else if(is_typing_keycomb(keycomb)){
-                fprintf(stderr,"fix-selected-key не может быть обычной клавишей набора без модификаторов (shift не считается) - используется:\n");
+                fprintf(stderr,"fix-selected не может быть обычной клавишей набора без модификаторов (shift не считается) - используется:\n");
                 parse_err=1;
             }
             else
@@ -938,11 +1035,11 @@ int read_line(FILE * file){
         }
         else if(strcmp(key,"swapcase-selected")==0){
             if(keycomb.key==0){
-                fprintf(stderr,"swapcase-selected-key не может состоять только из модификаторов - используется:\n");
+                fprintf(stderr,"swapcase-selected не может состоять только из модификаторов - используется:\n");
                 parse_err=1;
             }
             else if(is_typing_keycomb(keycomb)){
-                fprintf(stderr,"swapcase-selected-key не может быть обычной клавишей набора без модификаторов (shift не считается) - используется:\n");
+                fprintf(stderr,"swapcase-selected не может быть обычной клавишей набора без модификаторов (shift не считается) - используется:\n");
                 parse_err=1;
             }
             else
@@ -965,6 +1062,29 @@ int read_line(FILE * file){
     return 1;
 }
 
+int has_duplicates(const wchar_t * s){
+    for(; *s; s++)
+        if(wcschr(s+1,*s)!=NULL)
+            return 1;
+    return 0;
+}
+
+// пара таблиц должна быть одинаковой длины и без повторяющихся символов, иначе возвращаем значения по умолчанию
+void check_layout_pair(const wchar_t ** a, const wchar_t ** b, const wchar_t * def_a, const wchar_t * def_b, const char * names){
+    const char * err = NULL;
+    if(wcslen(*a)!=wcslen(*b))
+        err = "strings have different lengths";
+    else if(has_duplicates(*a) || has_duplicates(*b))
+        err = "a string has repeated characters";
+    if(err){
+        fprintf(stderr,"%s: %s - default values are used\n",names,err);
+        if(*a!=def_a) free((void*)*a);
+        if(*b!=def_b) free((void*)*b);
+        *a = def_a;
+        *b = def_b;
+    }
+}
+
 void read_settings(){
     FILE * file  = fopen("linux-punto-config.yaml","r");
     if(!file){
@@ -981,6 +1101,8 @@ void read_settings(){
         i++;
     }
     fclose(file);
+    check_layout_pair(&layout_ru, &layout_en, def_layout_ru, def_layout_en, "layout-ru/layout-en");
+    check_layout_pair(&layout_lo, &layout_up, def_layout_lo, def_layout_up, "layout-lo/layout-up");
 }
 
 // --------------- main ---------------
@@ -1160,6 +1282,7 @@ int main() {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
+    setup_locale(); // до read_settings: строки layout-* читаются как UTF-8
     read_settings();
 
     setup_uinput();
@@ -1180,7 +1303,6 @@ int main() {
     };
     setup_dbus(path_buf);
 
-    setup_locale();
     check_convert_strings();
 
     struct input_event evs[64];
