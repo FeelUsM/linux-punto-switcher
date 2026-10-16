@@ -1,4 +1,8 @@
 # Настройки linux-punto-switcher
+# после изменений выполните
+# systemctl --user restart linux-punto-switcher.service
+# чтобы посмотреть лог и ошибки выполните
+# journalctl --user -u linux-punto-switcher.service -n 50 --no-pager
 
 # сочетания клавиш могут состоять из нуля или более модификаторов и основной клавиши. Это всё разделяется знаком +, пробелы недопустимы, регистр не имеет значения
 # например
